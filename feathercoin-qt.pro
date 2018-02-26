@@ -1,7 +1,7 @@
 TEMPLATE = app
 TARGET = feathercoin-qt
 macx:TARGET = "Feathercoin-Qt"
-VERSION = 0.8.7.4
+VERSION = 0.8.8.0
 INCLUDEPATH += src src/json src/qt
 QT += core gui network
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
@@ -292,7 +292,8 @@ SOURCES += src/qt/bitcoin.cpp \
     src/noui.cpp \
     src/leveldb.cpp \
     src/txdb.cpp \
-    src/qt/splashscreen.cpp
+    src/qt/splashscreen.cpp \
+    src/checkpointsync.cpp
 
 RESOURCES += src/qt/bitcoin.qrc
 

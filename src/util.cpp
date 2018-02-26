@@ -82,7 +82,6 @@ bool fTestNet = false;
 bool fTestNetInit = false;
 
 /* NeoScrypt related */
-bool fNeoScrypt = false;
 uint nNeoScryptOptions = 0;
 
 bool fBloomFilters = true;
@@ -1089,7 +1088,7 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
         path = GetDefaultDataDir();
     }
     if (fNetSpecific && GetBoolArg("-testnet", false))
-        path /= "testnet3";
+        path /= "testnet4";
 
     fs::create_directories(path);
 

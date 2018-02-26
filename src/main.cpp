@@ -15,6 +15,7 @@
 #include "util.h"
 #include "ui_interface.h"
 #include "checkqueue.h"
+#include "checkpointsync.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -1101,132 +1102,84 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
 
     // The next block
     int nHeight = pindexLast->nHeight + 1;
-    
-    /* The 4th hard fork and testnet hard fork */
-    if((nHeight >= nForkFour) || (fTestNet && (nHeight >= nTestnetFork))) {
-        if(!fNeoScrypt) fNeoScrypt = true;
-        /* Difficulty reset after the switch */
-        if((nHeight == nForkFour) || (fTestNet && (nHeight == nTestnetFork)))
-          return(bnNeoScryptSwitch.GetCompact());
-    }
 
-	if (nHeight >= nForkOne)
+    if (!fTestNet && nHeight == nForkFour)
+        return bnNeoScryptSwitch.GetCompact();
+
+	if (!fTestNet && nHeight >= nForkOne)
 		nTargetTimespan = (7 * 24 * 60 * 60) / 8; // 7/8 days
 
-    if (nHeight >= nForkTwo)
+    if (!fTestNet && nHeight >= nForkTwo)
 		nTargetTimespan = (7 * 24 * 60 * 60) / 32; // 7/32 days
 
 	if (nHeight >= nForkThree || fTestNet) {
         nTargetTimespan = 60; // 1 minute timespan
         nTargetSpacing = 60; // 1 minute block
 	}
-
+  
     // 2016 blocks initial, 504 after the 1st, 126 after the 2nd hard fork, 15 after the 3rd hard fork
     int nInterval = nTargetTimespan / nTargetSpacing;
 
-    bool fHardFork = (nHeight == nForkOne) || (nHeight == nForkTwo) || (nHeight == nForkThree) || (nHeight == nForkFour);
-    if(fTestNet) {
-        if (nHeight == nTestnetFork) {
-            fHardFork = true;
-        } else {
-            fHardFork = false;
-        }
-    }
+    bool fHardFork = nHeight == nForkOne || nHeight == nForkTwo;
 
     // Difficulty rules regular blocks
-    if((nHeight % nInterval != 0) && !(fHardFork) && (nHeight < nForkThree)) {
-
-        // Special difficulty rule for testnet:
-        if (fTestNet)
-        {
-            // If the new block's timestamp is more than 2* 2.5 minutes
-            // then allow mining of a min-difficulty block.
-            if (pblock->nTime > pindexLast->nTime + nTargetSpacing*2)
-                return nProofOfWorkLimit;
-            else
-            {
-                // Return the last non-special-min-difficulty-rules-block
-                const CBlockIndex* pindex = pindexLast;
-                while (pindex->pprev && pindex->nHeight % nInterval != 0 && pindex->nBits == nProofOfWorkLimit)
-                    pindex = pindex->pprev;
-                return pindex->nBits;
-            }
-        }
-
+    if(!fTestNet && (nHeight % nInterval != 0) && !(fHardFork) && (nHeight < nForkThree))
         return pindexLast->nBits;
-    }
 
     // The 1st retarget after genesis
-    if(nInterval >= nHeight) nInterval = nHeight - 1;
+    if (nInterval >= nHeight)
+        nInterval = nHeight - 1;
 
     // Go back by nInterval
     const CBlockIndex* pindexFirst = pindexLast;
     for(int i = 0; pindexFirst && i < nInterval; i++)
-      pindexFirst = pindexFirst->pprev;
+        pindexFirst = pindexFirst->pprev;
     assert(pindexFirst);
 
     int nActualTimespan = pindexLast->GetBlockTime() - pindexFirst->GetBlockTime();
-
-    printf("RETARGET: nActualTimespan = %d before bounds\n", nActualTimespan);
+    int nActualTimespanAvg = 0;
 
     // Additional averaging over 4x nInterval window
-    if((nHeight >= nForkTwo) && (nHeight < nForkThree)) {
+    if(!fTestNet && (nHeight >= nForkTwo) && (nHeight < nForkThree)) {
         nInterval *= 4;
 
         const CBlockIndex* pindexFirst = pindexLast;
         for(int i = 0; pindexFirst && i < nInterval; i++)
-          pindexFirst = pindexFirst->pprev;
+            pindexFirst = pindexFirst->pprev;
 
-        int nActualTimespanLong =
-          (pindexLast->GetBlockTime() - pindexFirst->GetBlockTime())/4;
+        int nActualTimespanLong = (pindexLast->GetBlockTime() - pindexFirst->GetBlockTime()) / 4;
 
         // Average between short and long windows
-        int nActualTimespanAvg = (nActualTimespan + nActualTimespanLong)/2;
-
-        // Apply .25 damping
-        nActualTimespan = nActualTimespanAvg + 3*nTargetTimespan;
-        nActualTimespan /= 4;
-
-        printf("RETARGET: nActualTimespanLong = %d, nActualTimeSpanAvg = %d, nActualTimespan (damped) = %d\n",
-          nActualTimespanLong, nActualTimespanAvg, nActualTimespan);
+        nActualTimespanAvg = (nActualTimespan + nActualTimespanLong) / 2;
     }
-	
-	// Additional averaging over 15, 120 and 480 block window
+
+    // Additional averaging over 15, 120 and 480 block window
     if((nHeight >= nForkThree) || fTestNet) {
-	
-        nInterval *= 480;
+        nInterval = 480;
 
         int pindexFirstShortTime = 0;
         int pindexFirstMediumTime = 0;
         const CBlockIndex* pindexFirstLong = pindexLast;
-		for(int i = 0; pindexFirstLong && i < nInterval && i < nHeight - 1; i++) {  // i < nHeight - 1 special rule for testnet
-			pindexFirstLong = pindexFirstLong->pprev;
-			if (i == 14) {
+        for(int i = 0; pindexFirstLong && i < nInterval && i < nHeight - 1; i++) {
+            pindexFirstLong = pindexFirstLong->pprev;
+            if (i == 14)
                 pindexFirstShortTime = pindexFirstLong->GetBlockTime();
-			}
-			if (i == 119) {
+
+            if (i == 119)
                 pindexFirstMediumTime = pindexFirstLong->GetBlockTime();
-			}
-		}
+        }
 
-		int nActualTimespanShort =
-            (pindexLast->GetBlockTime() - pindexFirstShortTime)/15;
-		
-		int nActualTimespanMedium =
-            (pindexLast->GetBlockTime() - pindexFirstMediumTime)/120;
+        int nActualTimespanShort = (pindexLast->GetBlockTime() - pindexFirstShortTime) / 15;
+        int nActualTimespanMedium = (pindexLast->GetBlockTime() - pindexFirstMediumTime) / 120;
+        int nActualTimespanLong = (pindexLast->GetBlockTime() - pindexFirstLong->GetBlockTime()) / 480;
 
-        int nActualTimespanLong =
-			(pindexLast->GetBlockTime() - pindexFirstLong->GetBlockTime())/480;
+        nActualTimespanAvg = (nActualTimespanShort + nActualTimespanMedium + nActualTimespanLong) / 3;
+    }
 
-        int nActualTimespanAvg = 0;
-        nActualTimespanAvg = (nActualTimespanShort + nActualTimespanMedium + nActualTimespanLong)/3;
-
-		// Apply .25 damping
-		nActualTimespan = nActualTimespanAvg + 3*nTargetTimespan;
-		nActualTimespan /= 4;
-
-		printf("RETARGET: nActualTimespanShort = %d, nActualTimespanMedium = %d, nActualTimespanLong = %d, nActualTimeSpanAvg = %d, nActualTimespan (damped) = %d\n",
-		nActualTimespanShort, nActualTimespanMedium, nActualTimespanLong, nActualTimespanAvg, nActualTimespan);
+    // Apply .25 damping
+    if (nHeight >= nForkTwo || fTestNet) {
+        nActualTimespan = nActualTimespanAvg + 3 * nTargetTimespan;
+        nActualTimespan /= 4;
     }
 
     // The initial settings (4.0 difficulty limiter)
@@ -1234,7 +1187,7 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
     int nActualTimespanMin = nTargetTimespan/4;
 
     // The 1st hard fork (1.4142857 aka 41% difficulty limiter)
-    if(nHeight >= nForkOne) {
+    if(!fTestNet && nHeight >= nForkOne && nHeight < nForkTwo) {
         nActualTimespanMax = nTargetTimespan*99/70;
         nActualTimespanMin = nTargetTimespan*70/99;
     }
@@ -1245,11 +1198,10 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
         nActualTimespanMin = nTargetTimespan*453/494;
     }
 
-    if(nActualTimespan < nActualTimespanMin) nActualTimespan = nActualTimespanMin;
-    if(nActualTimespan > nActualTimespanMax) nActualTimespan = nActualTimespanMax;
-
-    printf("RETARGET: nActualTimespan = %d after bounds\n", nActualTimespan);
-    printf("RETARGET: nTargetTimespan = %d, nTargetTimespan/nActualTimespan = %.4f\n", nTargetTimespan, (float) nTargetTimespan/nActualTimespan);
+    if(nActualTimespan < nActualTimespanMin)
+        nActualTimespan = nActualTimespanMin;
+    if(nActualTimespan > nActualTimespanMax)
+        nActualTimespan = nActualTimespanMax;
 
     // Retarget
     CBigNum bnNew;
@@ -1259,10 +1211,6 @@ unsigned int static GetNextWorkRequired(const CBlockIndex* pindexLast, const CBl
 
     if (bnNew > bnProofOfWorkLimit)
         bnNew = bnProofOfWorkLimit;
-
-    printf("GetNextWorkRequired RETARGET\n");
-     printf("Before: %08x  %s\n", pindexLast->nBits, CBigNum().SetCompact(pindexLast->nBits).getuint256().ToString().c_str());
-    printf("After:  %08x  %s\n", bnNew.GetCompact(), bnNew.getuint256().ToString().c_str());
 
     return bnNew.GetCompact();
 }
@@ -1274,7 +1222,6 @@ bool CheckProofOfWork(uint256 hash, unsigned int nBits)
     CBigNum bnTarget;
     bnTarget.SetCompact(nBits);
 
-
     // Check range
     if (bnTarget <= 0 || bnTarget > bnProofOfWorkLimit)
         return error("CheckProofOfWork() : nBits below minimum work");
@@ -1282,7 +1229,6 @@ bool CheckProofOfWork(uint256 hash, unsigned int nBits)
     // Check proof of work matches claimed amount
     if (hash > bnTarget.getuint256())
         return error("CheckProofOfWork() : hash doesn't match nBits");
-
 
     return true;
 }
@@ -2165,9 +2111,17 @@ bool CBlock::CheckBlock(CValidationState &state, bool fCheckPOW, bool fCheckMerk
     if (vtx.empty() || vtx.size() > MAX_BLOCK_SIZE || ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > MAX_BLOCK_SIZE)
         return state.DoS(100, error("CheckBlock() : size limits failed"));
 
+    unsigned int profile = 0x0;
+    if (GetBlockTime() < nNeoScryptFork)
+        profile = 0x3;
+
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(GetPoWHash(), nBits))
+    if (fCheckPOW && !CheckProofOfWork(GetPoWHash(profile), nBits))
         return state.DoS(50, error("CheckBlock() : proof-of-work verification failed"));
+
+    // Check timestamp
+    if (GetBlockTime() > GetAdjustedTime() + 2 * 60 * 60)
+        return state.Invalid(error("CheckBlock() : block timestamp too far in the future"));
 
     // First transaction must be coinbase, the rest must not be
     if (vtx.empty() || !vtx[0].IsCoinBase())
@@ -2228,7 +2182,7 @@ bool CBlock::AcceptBlock(CValidationState &state, CDiskBlockPos *dbp)
         nHeight = pindexPrev->nHeight+1;
 
         /* Don't accept v1 blocks after this point */
-        if((fTestNet && (nTime > nTestnetSwitchV2)) || (!fTestNet && (nTime > nSwitchV2))) {
+        if (!fTestNet && nTime > nSwitchV2) {
             CScript expect = CScript() << nHeight;
             if(!std::equal(expect.begin(), expect.end(), vtx[0].vin[0].scriptSig.begin()))
                 return(state.DoS(100, error("AcceptBlock() : incorrect block height in coin base")));
@@ -2241,16 +2195,6 @@ bool CBlock::AcceptBlock(CValidationState &state, CDiskBlockPos *dbp)
         // Check timestamp against prev
         if (GetBlockTime() <= pindexPrev->GetMedianTimePast())
             return state.Invalid(error("AcceptBlock() : block's timestamp is too early"));
-
-    // limit block in future accepted in chain to only a time window of 15 min
-    if (GetBlockTime() > GetAdjustedTime() + 15 * 60)
-        return error("AcceptBlock() : block's timestamp too far in the future");
-
-
-    // Check timestamp against prev it should not be more then 2 times the window
-    if (((nHeight > nForkTwo) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 2 * 30 * 60)) ||
-	  ((nHeight >= nForkThree || fTestNet) && (GetBlockTime() <= pindexPrev->GetBlockTime() - 15 * 60))) // or 15 minutes
-        return error("AcceptBlock() : block's timestamp is too early compare to last block");
 			
         // Check that all transactions are finalized
         BOOST_FOREACH(const CTransaction& tx, vtx)
@@ -2260,6 +2204,10 @@ bool CBlock::AcceptBlock(CValidationState &state, CDiskBlockPos *dbp)
         // Check that the block chain matches the known block chain up to a checkpoint
         if (!Checkpoints::CheckBlock(nHeight, hash))
             return state.DoS(100, error("AcceptBlock() : rejected by checkpoint lock-in at %d", nHeight));
+
+		// ppcoin: check that the block satisfies synchronized checkpoint
+		if (!CheckSyncCheckpoint(hash, pindexPrev))
+            return error("AcceptBlock() : rejected by synchronized checkpoint");
  
         // Reject block.nVersion=1 blocks when 95% (75% on testnet) of the network has upgraded:
         if (nVersion < 2)
@@ -2312,6 +2260,9 @@ bool CBlock::AcceptBlock(CValidationState &state, CDiskBlockPos *dbp)
                 pnode->PushInventory(CInv(MSG_BLOCK, hash));
     }
 
+	// ppcoin: check pending sync-checkpoint
+    AcceptPendingSyncCheckpoint();
+
     return true;
 }
 
@@ -2358,6 +2309,10 @@ bool ProcessBlock(CValidationState &state, CNode* pfrom, CBlock* pblock, CDiskBl
 
     }
 
+	// ppcoin: ask for pending sync-checkpoint if any
+    if (!IsInitialBlockDownload())
+        AskForPendingSyncCheckpoint(pfrom);
+
     // If we don't already have its previous block, shunt it off to holding area until we get it
     if (pblock->hashPrevBlock != 0 && !mapBlockIndex.count(pblock->hashPrevBlock))
     {
@@ -2401,6 +2356,11 @@ bool ProcessBlock(CValidationState &state, CNode* pfrom, CBlock* pblock, CDiskBl
     }
 
     printf("ProcessBlock: ACCEPTED\n");
+	
+	// ppcoin: if responsible for sync-checkpoint send it
+    if (pfrom && !CSyncCheckpoint::strMasterPrivKey.empty() &&
+        (int)GetArg("-checkpointdepth", -1) >= 0)
+        SendSyncCheckpoint(AutoSelectSyncCheckpoint());
 	
     return true;
 }
@@ -2670,6 +2630,12 @@ bool static LoadBlockIndexDB()
     if (pblocktree->ReadBlockFileInfo(nLastBlockFile, infoLastBlockFile))
         printf("LoadBlockIndexDB(): last block file info: %s\n", infoLastBlockFile.ToString().c_str());
 		
+	// ppcoin: load hashSyncCheckpoint
+    if (!pblocktree->ReadSyncCheckpoint(hashSyncCheckpoint))
+        printf("LoadBlockIndexDB(): synchronized checkpoint not read\n");
+    else
+        printf("LoadBlockIndexDB(): synchronized checkpoint %s\n", hashSyncCheckpoint.ToString().c_str());
+		
     // Load nBestInvalidWork, OK if it doesn't exist
     CBigNum bnBestInvalidWork;
     pblocktree->ReadBestInvalidWork(bnBestInvalidWork);
@@ -2799,7 +2765,7 @@ bool LoadBlockIndex()
         pchMessageStart[1] = 0xaf;
         pchMessageStart[2] = 0xa5;
         pchMessageStart[3] = 0xba;
-        hashGenesisBlock = uint256("0x8e8b634d2f2800398261b7adcfbb6ace490e1746e62123ec2bf8010f9fc98b17");
+        hashGenesisBlock = uint256("0x7734b3734ab1f0d0758e6c274622a377092549df05f6a4fe6939cbc754939169");
     }
 
     //
@@ -2851,7 +2817,7 @@ bool InitBlockIndex() {
         if (fTestNet)
         {
             block.nTime    = 1396255061;
-            block.nNonce   = 3250989159;
+            block.nNonce   = 677449;
         }
 
         //// debug print
@@ -2873,11 +2839,17 @@ bool InitBlockIndex() {
             if (!block.WriteToDisk(blockPos))
                 return error("LoadBlockIndex() : writing genesis block to disk failed");
             if (!block.AddToBlockIndex(state, blockPos))
-                return error("LoadBlockIndex() : genesis block not accepted");				
+                return error("LoadBlockIndex() : genesis block not accepted");
+            if (!WriteSyncCheckpoint(hashGenesisBlock))
+                return error("LoadBlockIndex() : failed to init sync checkpoint");
         } catch(std::runtime_error &e) {
             return error("LoadBlockIndex() : failed to initialize block database: %s", e.what());
         }
     }
+    
+    // ppcoin: if checkpoint master key changed must reset sync-checkpoint
+    if (!CheckCheckpointPubKey())
+        return error("LoadBlockIndex() : failed to reset checkpoint master pubkey");
 
     return true;
 }
@@ -3055,11 +3027,25 @@ string GetWarnings(string strFor)
     if (!CLIENT_VERSION_IS_RELEASE)
         strStatusBar = _("This is a pre-release test build - use at your own risk - do not use for mining or merchant applications");
 		
+	// Checkpoint warning
+    if (strCheckpointWarning != "")
+    {
+        nPriority = 900;
+        strStatusBar = strCheckpointWarning;
+    }
+		
     // Misc warnings like out of disk space and clock is wrong
     if (strMiscWarning != "")
     {
         nPriority = 1000;
         strStatusBar = strMiscWarning;
+    }
+	
+	// ppcoin: if detected invalid checkpoint enter safe mode
+    if (hashInvalidCheckpoint != 0)
+    {
+        nPriority = 3000;
+        strStatusBar = strRPC = "WARNING: Inconsistent checkpoint found! Stop enforcing checkpoints and notify developers to resolve the issue.";
     }
 	
     // Alerts
@@ -3355,12 +3341,23 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             BOOST_FOREACH(PAIRTYPE(const uint256, CAlert)& item, mapAlerts)
                 item.second.RelayTo(pfrom);
         }
+        
+        // ppcoin: relay sync-checkpoint
+        {
+            LOCK(cs_hashSyncCheckpoint);
+            if (!checkpointMessage.IsNull())
+                checkpointMessage.RelayTo(pfrom);
+        }
 		
         pfrom->fSuccessfullyConnected = true;
 
         printf("receive version message: %s: version %d, blocks=%d, us=%s, them=%s, peer=%s\n", pfrom->cleanSubVer.c_str(), pfrom->nVersion, pfrom->nStartingHeight, addrMe.ToString().c_str(), addrFrom.ToString().c_str(), pfrom->addr.ToString().c_str());
 
         cPeerBlockCounts.input(pfrom->nStartingHeight);
+        
+        // ppcoin: ask for pending sync-checkpoint if any
+        if (!IsInitialBlockDownload())
+            AskForPendingSyncCheckpoint(pfrom);
     }
 
 
@@ -3776,6 +3773,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         pfrom->CloseSocketDisconnect();
         return error("peer %s attempted to set a bloom filter even though we do not advertise that service",
                      pfrom->addr.ToString().c_str());
+    }
+    
+    else if (strCommand == "checkpoint") // ppcoin synchronized checkpoint
+    {
+        CSyncCheckpoint checkpoint;
+        vRecv >> checkpoint;
+
+        if (checkpoint.ProcessSyncCheckpoint(pfrom))
+        {
+            // Relay
+            pfrom->hashCheckpointKnown = checkpoint.hashCheckpoint;
+            LOCK(cs_vNodes);
+            BOOST_FOREACH(CNode* pnode, vNodes)
+                checkpoint.RelayTo(pnode);
+        }
     }
 
     else if (strCommand == "filterload")
@@ -4493,7 +4505,7 @@ void FormatDataBuffer(CBlock *pblock, unsigned int *pdata) {
     data.nBits          = pblock->nBits;
     data.nNonce         = pblock->nNonce;
 
-    if(fNeoScrypt) {
+    if(pblock->nTime >= nNeoScryptFork) {
         /* Copy the LE data */
         for(i = 0; i < 20; i++)
           pdata[i] = ((unsigned int *) &data)[i];
@@ -4511,7 +4523,11 @@ void FormatDataBuffer(CBlock *pblock, unsigned int *pdata) {
 
 bool CheckWork(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
 {
-    uint256 hash = pblock->GetPoWHash();
+    unsigned int profile = 0x0;
+    if (pblock->GetBlockTime() < nNeoScryptFork)
+        profile = 0x3;
+
+    uint256 hash = pblock->GetPoWHash(profile);
     uint256 hashTarget = CBigNum().SetCompact(pblock->nBits).getuint256();
 
     if (hash > hashTarget)
@@ -4585,10 +4601,11 @@ void static FeathercoinMiner(CWallet *pwallet)
         uint256 hashTarget = CBigNum().SetCompact(pblock->nBits).getuint256();
         while(true) {
             unsigned int nHashesDone = 0;
-            unsigned int profile = fNeoScrypt ? 0x0 : 0x3;
+            unsigned int profile = 0x0;
+            if (pblock->nTime < nNeoScryptFork)
+                profile = 0x3;
             uint256 hash;
 
-            profile |= nNeoScryptOptions;
 
             while(true) {
                 neoscrypt((unsigned char *) &pblock->nVersion, (unsigned char *) &hash, profile);
